@@ -1,0 +1,96 @@
+@startuml Agenda Inteligente
+
+skinparam sequence {
+    ArrowColor #534AB7
+    ActorBorderColor #534AB7
+    LifeLineBorderColor #888780
+    LifeLineBackgroundColor #F1EFE8
+    ParticipantBorderColor #534AB7
+    ParticipantBackgroundColor #EEEDFE
+    ParticipantFontColor #26215C
+    BoxBorderColor #B4B2A9
+    BoxBackgroundColor #F1EFE8
+}
+skinparam ArrowFontSize 12
+skinparam NoteFontSize 12
+skinparam shadowing false
+
+participant "Scheduler" as SCH #EEEDFE
+participant "Playwright\n(RPA)" as PLW #E1F5EE
+participant "Google Sheets\n(pubhtml)" as SHT #E6F1FB
+participant "Notificação\n(desktop)" as NOT #FAEEDA
+participant "Telegram\n(bot API)" as TEL #FAECE7
+
+' ════════════════════════════════════════════
+' INICIALIZAÇÃO
+' ════════════════════════════════════════════
+== Inicialização — iniciar() ==
+
+SCH -> PLW  : carregar_agenda()
+PLW -> SHT  : page.goto(SHEETS_URL)
+SHT --> PLW : HTML + iframe (sheet?headers=false)
+PLW -> SHT  : wait_for_selector("table.waffle")\nquery_selector_all("tr")
+SHT --> PLW : linhas da tabelaa
+PLW --> SCH : DataFrame (N tarefas)
+note right of PLW : browser.close()
+
+SCH -> SCH  : registra jobs\nevery(1).minutes → verificar_tarefas()\nevery().day.at("08:00") → gerar_relatorio()
+
+SCH -> PLW  : gerar_relatorio() imediato\n→ carregar_agenda()
+PLW -> SHT  : scraping planilha
+SHT --> PLW : tarefas
+PLW --> SCH : DataFrame filtrado (próximos 7 dias)
+SCH -> SCH  : formata mensagem Markdown
+SCH -> TEL  : POST /sendMessage\n{chat_id, text, parse_mode: Markdown}
+TEL --> SCH : 200 OK
+SCH -> SCH  : relatorio_enviado_hoje = hoje
+
+loop while True — sleep 30s
+    SCH -> SCH : schedule.run_pending()
+end
+
+' ════════════════════════════════════════════
+' VERIFICAÇÃO DE TAREFAS (a cada 1 minuto)
+' ════════════════════════════════════════════
+== Loop: a cada 1 minuto — verificar_tarefas() ==
+
+SCH -> PLW  : carregar_agenda()
+PLW -> PLW  : chromium.launch(headless=True)
+PLW -> SHT  : page.goto(SHEETS_URL)
+SHT --> PLW : HTML + iframe
+PLW -> SHT  : wait_for_selector("table.waffle")\nquery rows
+SHT --> PLW : linhas extraídas
+PLW --> SCH : DataFrame
+note right of PLW : browser.close()
+
+loop para cada tarefa no DataFrame
+    SCH -> SCH : diff = (DataHora - now).seconds / 60\n55 ≤ diff ≤ 65 e chave não enviada?
+    alt tarefa dentro da janela de ~1 hora
+        SCH -> NOT : notificar(titulo, mensagem)
+        NOT -> NOT : notification.notify()\ntocar_som()
+        SCH -> SCH : notificacoes_enviadas.add(chave)
+    else fora da janela ou já notificada
+        SCH -> SCH : ignora
+    end
+end
+
+' ════════════════════════════════════════════
+' RELATÓRIO DIÁRIO (08:00)
+' ════════════════════════════════════════════
+== Diário às 08:00 — gerar_relatorio() ==
+
+SCH -> SCH  : relatorio_enviado_hoje == hoje?
+alt já enviado hoje
+    SCH -> SCH : return (ignora)
+else não enviado ainda
+    SCH -> PLW  : carregar_agenda()
+    PLW -> SHT  : page.goto(SHEETS_URL)\nquery table.waffle
+    SHT --> PLW : linhas da planilha
+    PLW --> SCH : DataFrame completo
+    SCH -> SCH  : filtra hoje ≤ DataHora ≤ hoje + 7 dias\nordena por DataHora\nformata mensagem Markdown
+    SCH -> TEL  : POST /sendMessage\n📅 Relatório — DD/MM/YYYY\n• HH:MM › Titulo — Descricao
+    TEL --> SCH : 200 OK
+    SCH -> SCH  : relatorio_enviado_hoje = hoje
+end
+
+@enduml
